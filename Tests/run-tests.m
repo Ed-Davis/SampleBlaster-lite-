@@ -85,9 +85,14 @@ static NSURL *makeImage(NSURL *dir) {
     NSString *errText = nil;
     int status = [SBDisk runTool:@"/usr/bin/hdiutil"
                        arguments:@[@"create", @"-size", @"64m", @"-layout", @"MBRSPUD", @"-fs", @"MS-DOS FAT16",
-                                   @"-volname", @"MPCTEST", @"-format", @"UDTO", base]
+                                   @"-volname", @"MPCTEST", @"-type", @"UDIF", base]
                           output:NULL errorOutput:&errText];
     CHECK(status == 0, @"hdiutil create: %@", errText);
+    // Convert to a raw image (.cdr), which is what an SD card's HD0.img is.
+    status = [SBDisk runTool:@"/usr/bin/hdiutil"
+                   arguments:@[@"convert", [base stringByAppendingString:@".dmg"], @"-format", @"UDTO", @"-o", base]
+                      output:NULL errorOutput:&errText];
+    CHECK(status == 0, @"hdiutil convert: %@", errText);
     NSURL *img = [dir URLByAppendingPathComponent:@"HD0.img"];
     [NSFileManager.defaultManager moveItemAtURL:[NSURL fileURLWithPath:[base stringByAppendingString:@".cdr"]] toURL:img error:NULL];
     return img;
