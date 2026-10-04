@@ -23,6 +23,6 @@ You can open folders on the image (double-click) to copy files into them, and pi
 
 Artwork is in `Artwork/`: `AppIcon.png` (the app icon) and `Splash.png` (shown at launch). The splash and the window's title bar show "Copyright Ed Davis 2026" with the version and build. The version is always marked **beta**, and the build number counts commits. An optional `Header.png` can go across the top of the window.
 
-Push to a `test-release/<anything>` branch to publish the DMG as a GitHub pre-release.
+Push to a `test-release/<anything>` branch to publish the DMG as a GitHub pre-release. With the five signing secrets listed at the top of `.github/workflows/release.yml`, it's signed with a Developer ID and notarised. To do the same on a Mac, run `SIGN_IDENTITY="Developer ID Application: …" NOTARY_PROFILE=<profile> ./make-app.sh`.
 
-The app is ad-hoc signed. The first time, right-click it and choose **Open**.
+Release builds are signed with a Developer ID and notarised, so they open normally. If a build isn't, and macOS says you don't have permission to open it, run `xattr -cr "/Applications/SampleBlaster Lite.app"` in Terminal and open it again.
