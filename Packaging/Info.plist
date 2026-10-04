@@ -21,7 +21,7 @@
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>NSHumanReadableCopyright</key>
-    <string>By Ed Davis. © 2026 Ed Davis. All rights reserved.</string>
+    <string>Copyright Ed Davis 2026</string>
     <key>LSMinimumSystemVersion</key>
     <string>10.13</string>
     <key>LSApplicationCategoryType</key>

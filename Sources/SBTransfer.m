@@ -1,14 +1,10 @@
 #import "SBTransfer.h"
 #import "SBDisk.h"
-#import <AVFoundation/AVFoundation.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
 
-/// 256 MiB of 16-bit audio: far beyond the MPC2000XL's 32 MB sample memory,
-/// and a cap on what a file with a lying header can make us allocate.
-static const NSUInteger kMaxPCMBytes = 256u * 1024u * 1024u;
 /// Deepest folder nesting copied from the Mac.
 static const NSInteger kMaxDepth = 32;
 
@@ -71,105 +67,6 @@ static NSError *SBTransferError(NSString *message) {
     return taken;
 }
 
-#pragma mark Audio
-
-+ (BOOL)isConvertibleAudio:(NSURL *)url {
-    static NSSet<NSString *> *exts;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        exts = [NSSet setWithArray:@[@"wav", @"wave", @"aif", @"aiff", @"aifc", @"caf",
-                                     @"mp3", @"m4a", @"aac", @"flac"]];
-    });
-    return [exts containsObject:url.pathExtension.lowercaseString];
-}
-
-+ (NSData *)wavWithPCM:(NSData *)pcm channels:(uint16_t)channels sampleRate:(uint32_t)sampleRate {
-    NSMutableData *d = [NSMutableData dataWithCapacity:44 + pcm.length];
-    void (^text)(const char *) = ^(const char *s) { [d appendBytes:s length:4]; };
-    void (^u32)(uint32_t) = ^(uint32_t v) { uint32_t le = CFSwapInt32HostToLittle(v); [d appendBytes:&le length:4]; };
-    void (^u16)(uint16_t) = ^(uint16_t v) { uint16_t le = CFSwapInt16HostToLittle(v); [d appendBytes:&le length:2]; };
-    uint16_t blockAlign = channels * 2;
-    text("RIFF"); u32((uint32_t)(36 + pcm.length)); text("WAVE");
-    text("fmt "); u32(16); u16(1); u16(channels); u32(sampleRate); u32(sampleRate * blockAlign); u16(blockAlign); u16(16);
-    text("data"); u32((uint32_t)pcm.length);
-    [d appendData:pcm];
-    if (pcm.length % 2) [d appendBytes:"\0" length:1];
-    return d;
-}
-
-+ (NSData *)mpcWAVFromAudioFile:(NSURL *)source error:(NSError **)error {
-    NSError *openError = nil;
-    AVAudioFile *input = [[AVAudioFile alloc] initForReading:source error:&openError];
-    if (!input) {
-        if (error) *error = openError ?: SBTransferError(@"This audio file can't be read.");
-        return nil;
-    }
-    AVAudioFormat *inFormat = input.processingFormat;
-    double inRate = inFormat.sampleRate;
-    if (!(inRate >= 1000 && inRate <= 768000) || inFormat.channelCount == 0) {
-        if (error) *error = SBTransferError(@"This audio format can't be converted.");
-        return nil;
-    }
-    const double outRate = 44100;
-    AVAudioChannelCount channels = MIN(inFormat.channelCount, (AVAudioChannelCount)2);
-    // The header's length is only a hint, but refuse obviously huge files early.
-    double expectedBytes = (double)input.length * outRate / inRate * channels * 2;
-    if (expectedBytes > kMaxPCMBytes) {
-        if (error) *error = SBTransferError(@"This audio is too long for the MPC (it holds at most 32 MB of samples).");
-        return nil;
-    }
-
-    AVAudioFormat *outFormat = [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatInt16
-                                                                sampleRate:outRate channels:channels interleaved:YES];
-    AVAudioConverter *converter = [[AVAudioConverter alloc] initFromFormat:inFormat toFormat:outFormat];
-    AVAudioPCMBuffer *inBuffer = [[AVAudioPCMBuffer alloc] initWithPCMFormat:inFormat frameCapacity:8192];
-    if (!outFormat || !converter || !inBuffer) {
-        if (error) *error = SBTransferError(@"This audio format can't be converted.");
-        return nil;
-    }
-    converter.downmix = inFormat.channelCount > 2;
-    converter.sampleRateConverterQuality = AVAudioQualityMax;
-
-    AVAudioFrameCount outCapacity = (AVAudioFrameCount)(8192.0 * outRate / inRate) + 1024;
-    NSMutableData *pcm = [NSMutableData data];
-    __block BOOL reachedEnd = NO;
-    while (YES) {
-        AVAudioPCMBuffer *outBuffer = [[AVAudioPCMBuffer alloc] initWithPCMFormat:outFormat frameCapacity:outCapacity];
-        if (!outBuffer) break;
-        NSError *convertError = nil;
-        AVAudioConverterOutputStatus status =
-            [converter convertToBuffer:outBuffer error:&convertError
-                    withInputFromBlock:^AVAudioBuffer *(AVAudioPacketCount count, AVAudioConverterInputStatus *inputStatus) {
-            if (reachedEnd) { *inputStatus = AVAudioConverterInputStatus_EndOfStream; return nil; }
-            NSError *readError = nil;
-            if (![input readIntoBuffer:inBuffer frameCount:inBuffer.frameCapacity error:&readError] || inBuffer.frameLength == 0) {
-                reachedEnd = YES;
-                *inputStatus = AVAudioConverterInputStatus_EndOfStream;
-                return nil;
-            }
-            *inputStatus = AVAudioConverterInputStatus_HaveData;
-            return inBuffer;
-        }];
-        if (status == AVAudioConverterOutputStatus_Error) {
-            if (error) *error = convertError ?: SBTransferError(@"The audio couldn't be converted.");
-            return nil;
-        }
-        if (outBuffer.frameLength > 0 && outBuffer.int16ChannelData) {
-            [pcm appendBytes:outBuffer.int16ChannelData[0] length:(NSUInteger)outBuffer.frameLength * channels * 2];
-            if (pcm.length > kMaxPCMBytes) {
-                if (error) *error = SBTransferError(@"This audio is too long for the MPC (it holds at most 32 MB of samples).");
-                return nil;
-            }
-        }
-        if (status == AVAudioConverterOutputStatus_EndOfStream || status == AVAudioConverterOutputStatus_InputRanDry) break;
-    }
-    if (pcm.length == 0) {
-        if (error) *error = SBTransferError(@"The file contains no audio.");
-        return nil;
-    }
-    return [self wavWithPCM:pcm channels:(uint16_t)channels sampleRate:(uint32_t)outRate];
-}
-
 #pragma mark Copying
 
 /// Copies only the file's contents (no Mac metadata, so no ._ files on FAT)
@@ -212,59 +109,18 @@ static NSError *SBTransferError(NSString *message) {
     return ok;
 }
 
-+ (BOOL)writeData:(NSData *)data to:(NSURL *)destination error:(NSError **)error {
-    int out = open(destination.fileSystemRepresentation, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0644);
-    if (out < 0) {
-        if (error) *error = SBTransferError([NSString stringWithFormat:@"Couldn't write it (%s).", strerror(errno)]);
-        return NO;
-    }
-    const char *bytes = data.bytes;
-    NSUInteger done = 0;
-    int failure = 0;
-    while (done < data.length) {
-        ssize_t w = write(out, bytes + done, data.length - done);
-        if (w < 0) { if (errno == EINTR) continue; failure = errno; break; }
-        done += (NSUInteger)w;
-    }
-    if (failure == 0 && fsync(out) != 0) failure = errno;
-    close(out);
-    if (failure) {
-        unlink(destination.fileSystemRepresentation);
-        if (error) *error = SBTransferError([NSString stringWithFormat:@"Couldn't write it (%s).", strerror(failure)]);
-        return NO;
-    }
-    return YES;
-}
-
 + (void)addFile:(NSURL *)url into:(NSURL *)folder taken:(NSMutableSet<NSString *> *)taken
          prefix:(NSString *)prefix results:(NSMutableArray<NSString *> *)results {
     NSString *display = [prefix stringByAppendingString:url.lastPathComponent];
     NSString *base = url.lastPathComponent.stringByDeletingPathExtension;
-    NSError *error = nil;
-
-    if ([self isConvertibleAudio:url]) {
-        NSData *wav = [self mpcWAVFromAudioFile:url error:&error];
-        if (wav) {
-            NSString *name = [self uniqueFileName:base extension:@"WAV" taken:taken];
-            if ([self writeData:wav to:[folder URLByAppendingPathComponent:name] error:&error]) {
-                [results addObject:[NSString stringWithFormat:@"%@ → %@", display, name]];
-                return;
-            }
-            [taken removeObject:name.uppercaseString];
-            [results addObject:[NSString stringWithFormat:@"%@: skipped. %@", display, error.localizedDescription]];
-            return;
-        }
-        // Not decodable after all: fall through and copy it unchanged.
-    }
     NSString *ext = url.pathExtension.length ? url.pathExtension : @"BIN";
     NSString *name = [self uniqueFileName:base extension:ext taken:taken];
-    NSError *copyError = nil;
-    if ([self copyContentsOf:url to:[folder URLByAppendingPathComponent:name] error:&copyError]) {
-        NSString *note = error ? @" (copied as it is: it couldn't be converted)" : @"";
-        [results addObject:[NSString stringWithFormat:@"%@ → %@%@", display, name, note]];
+    NSError *error = nil;
+    if ([self copyContentsOf:url to:[folder URLByAppendingPathComponent:name] error:&error]) {
+        [results addObject:[NSString stringWithFormat:@"%@ → %@", display, name]];
     } else {
         [taken removeObject:name.uppercaseString];
-        [results addObject:[NSString stringWithFormat:@"%@: skipped. %@", display, copyError.localizedDescription]];
+        [results addObject:[NSString stringWithFormat:@"%@: skipped. %@", display, error.localizedDescription]];
     }
 }
 

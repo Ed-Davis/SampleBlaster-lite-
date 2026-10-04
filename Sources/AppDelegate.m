@@ -1,6 +1,7 @@
 #import "AppDelegate.h"
 #import "SBDisk.h"
 #import "SBTransfer.h"
+#import <objc/runtime.h>
 
 #pragma mark - Drop target
 
@@ -61,6 +62,91 @@
 
 @end
 
+#pragma mark - Version and copyright
+
+static NSString * const SBCopyright = @"Copyright Ed Davis 2026";
+
+/// "Version 1.0 beta (build 12)". Always marked beta: this app can't be
+/// tested on a real High Sierra Mac before release.
+static NSString *SBVersionLine(void) {
+    NSDictionary *info = NSBundle.mainBundle.infoDictionary;
+    NSString *version = info[@"CFBundleShortVersionString"] ?: @"1.0";
+    NSString *build = info[@"CFBundleVersion"] ?: @"1";
+    return [NSString stringWithFormat:@"Version %@ beta (build %@)", version, build];
+}
+
+#pragma mark - Splash screen
+
+/// The artwork, with the copyright, version and build drawn over it. Shown
+/// for a moment at launch; a click dismisses it sooner.
+@interface SBSplash : NSObject
++ (void)showThen:(void (^)(void))done;
+@end
+
+@implementation SBSplash
+
+static NSWindow *sSplashWindow;
+
++ (void)showThen:(void (^)(void))done {
+    NSImage *image = [NSImage imageNamed:@"Splash"];
+    if (!image || image.size.width <= 0) { done(); return; }
+    CGFloat width = 640, height = round(width * image.size.height / image.size.width);
+    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, width, height)
+                                                   styleMask:NSWindowStyleMaskBorderless
+                                                     backing:NSBackingStoreBuffered defer:NO];
+    window.releasedWhenClosed = NO;
+    window.backgroundColor = NSColor.blackColor;
+    window.hasShadow = YES;
+    window.level = NSFloatingWindowLevel;
+
+    NSImageView *imageView = [NSImageView imageViewWithImage:image];
+    imageView.imageScaling = NSImageScaleProportionallyUpOrDown;
+    imageView.frame = NSMakeRect(0, 0, width, height);
+    [window.contentView addSubview:imageView];
+
+    NSTextField *overlay = [NSTextField labelWithString:[NSString stringWithFormat:@"%@  ·  %@", SBCopyright, SBVersionLine()]];
+    overlay.font = [NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
+    overlay.textColor = [NSColor colorWithWhite:1 alpha:0.92];
+    overlay.alignment = NSTextAlignmentCenter;
+    overlay.drawsBackground = NO;
+    NSShadow *shadow = [[NSShadow alloc] init];
+    shadow.shadowColor = [NSColor colorWithWhite:0 alpha:0.9];
+    shadow.shadowBlurRadius = 3;
+    shadow.shadowOffset = NSMakeSize(0, -1);
+    overlay.shadow = shadow;
+    overlay.frame = NSMakeRect(0, 16, width, 20);
+    [window.contentView addSubview:overlay];
+
+    __block BOOL finished = NO;
+    void (^finish)(void) = ^{
+        if (finished) return;
+        finished = YES;
+        [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
+            context.duration = 0.35;
+            window.animator.alphaValue = 0;
+        } completionHandler:^{
+            [window orderOut:nil];
+            sSplashWindow = nil;
+        }];
+        done();
+    };
+    NSClickGestureRecognizer *click = [[NSClickGestureRecognizer alloc] initWithTarget:self action:@selector(clicked:)];
+    [imageView addGestureRecognizer:click];
+    objc_setAssociatedObject(self, @selector(clicked:), finish, OBJC_ASSOCIATION_COPY);
+
+    sSplashWindow = window;
+    [window center];
+    [window orderFront:nil];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), finish);
+}
+
++ (void)clicked:(id)sender {
+    void (^finish)(void) = objc_getAssociatedObject(self, @selector(clicked:));
+    if (finish) finish();
+}
+
+@end
+
 #pragma mark - App
 
 @interface AppDelegate () <NSTableViewDataSource, NSTableViewDelegate>
@@ -101,8 +187,19 @@
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)note {
-    [_window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
+    [SBSplash showThen:^{
+        [self->_window makeKeyAndOrderFront:nil];
+    }];
+}
+
+- (IBAction)showAbout:(id)sender {
+    NSDictionary *info = NSBundle.mainBundle.infoDictionary;
+    [NSApp orderFrontStandardAboutPanelWithOptions:@{
+        @"ApplicationVersion": [NSString stringWithFormat:@"%@ beta", info[@"CFBundleShortVersionString"] ?: @"1.0"],
+        @"Version": [NSString stringWithFormat:@"build %@", info[@"CFBundleVersion"] ?: @"1"],
+        @"Copyright": SBCopyright,
+    }];
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)app {
@@ -147,7 +244,7 @@
     NSMenuItem *appItem = [[NSMenuItem alloc] init];
     NSMenu *appMenu = [[NSMenu alloc] initWithTitle:appName];
     [appMenu addItemWithTitle:[@"About " stringByAppendingString:appName]
-                       action:@selector(orderFrontStandardAboutPanel:) keyEquivalent:@""];
+                       action:@selector(showAbout:) keyEquivalent:@""].target = self;
     [appMenu addItem:NSMenuItem.separatorItem];
     [appMenu addItemWithTitle:[@"Hide " stringByAppendingString:appName] action:@selector(hide:) keyEquivalent:@"h"];
     [appMenu addItem:NSMenuItem.separatorItem];
@@ -195,8 +292,9 @@
                                           styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                                                     NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
                                             backing:NSBackingStoreBuffered defer:NO];
-    _window.title = @"SampleBlaster Lite";
-    _window.contentMinSize = NSMakeSize(460, 420);
+    // The title bar carries the copyright, version and build.
+    _window.title = [NSString stringWithFormat:@"SampleBlaster Lite  —  %@  —  %@", SBCopyright, SBVersionLine()];
+    _window.contentMinSize = NSMakeSize(560, 420);
     _window.releasedWhenClosed = NO;
     [_window center];
     [_window setFrameAutosaveName:@"Main"];
@@ -504,7 +602,7 @@
     panel.canChooseDirectories = YES;
     panel.allowsMultipleSelection = YES;
     panel.prompt = @"Add";
-    panel.message = @"Choose samples, MPC files or folders to add";
+    panel.message = @"Choose samples, MPC files or folders to add (they're copied exactly as they are)";
     [panel beginSheetModalForWindow:_window completionHandler:^(NSModalResponse result) {
         if (result == NSModalResponseOK) [self addURLs:panel.URLs];
     }];

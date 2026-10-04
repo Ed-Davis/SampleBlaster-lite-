@@ -15,21 +15,26 @@ APP_NAME="SampleBlaster Lite"
 EXEC="SampleBlasterLite"
 APP="build/${APP_NAME}.app"
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Packaging/Info.plist)"
+# The build number counts commits, so every build from a new commit is distinct.
+BUILD="${BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 SOURCES=(Sources/main.m Sources/AppDelegate.m Sources/SBDisk.m Sources/SBTransfer.m)
 FLAGS=(-fobjc-arc -O2 -Wall -Wextra -Wno-unused-parameter
        -Werror=unguarded-availability -Werror=unguarded-availability-new -Werror=objc-method-access
-       -framework Cocoa -framework AVFoundation)
+       -framework Cocoa)
 
-echo "▸ Building ${APP_NAME} ${VERSION}…"
+echo "▸ Building ${APP_NAME} ${VERSION} beta (build ${BUILD})…"
 rm -rf build
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" build/arch
 xcrun clang -target x86_64-apple-macos10.13 "${FLAGS[@]}" "${SOURCES[@]}" -o build/arch/x86_64
 xcrun clang -target arm64-apple-macos11.0 "${FLAGS[@]}" "${SOURCES[@]}" -o build/arch/arm64
 lipo -create build/arch/x86_64 build/arch/arm64 -output "$APP/Contents/MacOS/$EXEC"
 cp Packaging/Info.plist "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${BUILD}" "$APP/Contents/Info.plist"
 
-# Artwork: Artwork/AppIcon.png (1024×1024) and an optional Artwork/Header.png.
+# Artwork: Artwork/AppIcon.png (square), Artwork/Splash.png (shown at launch,
+# with the copyright, version and build drawn over it), and an optional
+# Artwork/Header.png across the top of the window.
 if [[ -f Artwork/AppIcon.png ]]; then
   ICONSET="$(mktemp -d)/AppIcon.iconset"
   mkdir -p "$ICONSET"
@@ -41,7 +46,11 @@ if [[ -f Artwork/AppIcon.png ]]; then
 else
   echo "  (no Artwork/AppIcon.png yet: using the generic app icon)"
 fi
-[[ -f Artwork/Header.png ]] && cp Artwork/Header.png "$APP/Contents/Resources/Header.png"
+if [[ -f Artwork/Splash.png ]]; then
+  # Shown 640 points wide: keep a 2× copy, not the full-size original.
+  sips -Z 1344 Artwork/Splash.png --out "$APP/Contents/Resources/Splash.png" >/dev/null
+fi
+if [[ -f Artwork/Header.png ]]; then cp Artwork/Header.png "$APP/Contents/Resources/Header.png"; fi
 
 xattr -cr "$APP" 2>/dev/null || true
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
@@ -55,7 +64,7 @@ echo "▸ Checking it's built for High Sierra…"
 ./Packaging/check-compat.sh "$APP/Contents/MacOS/$EXEC"
 
 # HFS+ (not APFS) and zlib compression, so the DMG opens on old Macs too.
-DMG="build/${APP_NAME} ${VERSION}.dmg"
+DMG="build/${APP_NAME} ${VERSION} beta (build ${BUILD}).dmg"
 STAGING="$(mktemp -d)"
 cp -R "$APP" "$STAGING/"
 ln -s /Applications "$STAGING/Applications"
