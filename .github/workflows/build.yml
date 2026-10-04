@@ -30,34 +30,6 @@ jobs:
           set -o pipefail
           ./make-app.sh 2>&1 | tee build.log
 
-      - name: Preview screenshots (temporary)
-        if: success()
-        run: |
-          open "build/SampleBlaster Lite.app"
-          sleep 1.2
-          screencapture -x splash-full.png || true
-          sleep 4
-          screencapture -x main-full.png || true
-          for n in splash main; do
-            [ -f "$n-full.png" ] || continue
-            sips -c 760 1100 "$n-full.png" --out "$n-crop.png" >/dev/null
-            sips -Z 620 -s format jpeg -s formatOptions 40 "$n-crop.png" --out "$n.jpg" >/dev/null
-            echo "$n.jpg: $(wc -c < $n.jpg) bytes"
-          done
-          osascript -e 'quit app "SampleBlaster Lite"' || true
-
-      - name: Send splash preview (temporary)
-        if: success()
-        run: |
-          [ -f splash.jpg ] || exit 0
-          base64 -i splash.jpg | tr -d '\n' | fold -w 3900 | nl -w2 -s'|' | while IFS= read -r line; do echo "::notice title=splash::$line"; done
-
-      - name: Send main window preview (temporary)
-        if: success()
-        run: |
-          [ -f main.jpg ] || exit 0
-          base64 -i main.jpg | tr -d '\n' | fold -w 3900 | nl -w2 -s'|' | while IFS= read -r line; do echo "::notice title=main::$line"; done
-
       - name: Report problems
         if: always()
         run: |
