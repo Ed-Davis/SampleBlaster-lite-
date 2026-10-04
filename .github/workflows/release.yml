@@ -5,9 +5,10 @@ name: Beta Release
 # v<version>-beta-build<number>. Always a pre-release: this app can't be
 # tested on a High Sierra Mac before it goes out.
 #
-# With these repository secrets (Settings ▸ Secrets and variables ▸ Actions)
-# the app and DMG are signed with your Developer ID and notarised, so they
-# open normally on every Mac. Without them the build is ad-hoc signed.
+# Releases are always signed with your Developer ID and notarised, so they
+# open normally on every Mac. It needs these repository secrets (Settings ▸
+# Secrets and variables ▸ Actions ▸ Secrets tab ▸ Repository secrets), and
+# stops before publishing anything if one is missing.
 #   DEVELOPER_ID_P12           base64 of your "Developer ID Application" certificate,
 #                              exported from Keychain Access as .p12
 #   DEVELOPER_ID_P12_PASSWORD  the password you gave that .p12
@@ -30,10 +31,25 @@ jobs:
     outputs:
       version: ${{ steps.meta.outputs.version }}
       build: ${{ steps.meta.outputs.build }}
-      signed: ${{ env.HAS_SIGNING }}
-    env:
-      HAS_SIGNING: ${{ secrets.DEVELOPER_ID_P12 != '' && secrets.NOTARY_KEY_P8 != '' }}
     steps:
+      - name: Check the signing secrets are set
+        env:
+          DEVELOPER_ID_P12: ${{ secrets.DEVELOPER_ID_P12 }}
+          DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          missing=""
+          for name in DEVELOPER_ID_P12 DEVELOPER_ID_P12_PASSWORD NOTARY_KEY_P8 NOTARY_KEY_ID NOTARY_ISSUER_ID; do
+            if [ -n "${!name}" ]; then echo "✓ $name is set"; else echo "✗ $name is missing"; missing="$missing $name"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::This repository can't see these secrets:$missing. Add them under Settings ▸ Secrets and variables ▸ Actions ▸ Secrets ▸ New repository secret (not Variables, not an Environment) in Ed-Davis/SampleBlaster-lite-."
+            exit 1
+          fi
+          echo "::notice::All five signing secrets are set."
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -43,7 +59,6 @@ jobs:
         run: ./Tests/run-tests.sh
 
       - name: Import the Developer ID certificate
-        if: env.HAS_SIGNING == 'true'
         env:
           P12: ${{ secrets.DEVELOPER_ID_P12 }}
           P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
@@ -68,17 +83,19 @@ jobs:
           NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
           NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER_ID }}
         run: |
-          if [ "$HAS_SIGNING" = "true" ]; then
-            export NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8"
-            echo "$KEY" | base64 --decode > "$NOTARY_KEY_PATH"
-          else
-            echo "::warning::No signing secrets: this build is ad-hoc signed, and macOS may refuse to open it."
-          fi
-          ./make-app.sh
-          rm -f "$RUNNER_TEMP/notary.p8"
+          export NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8"
+          echo "$KEY" | base64 --decode > "$NOTARY_KEY_PATH"
+          set -o pipefail
+          ./make-app.sh 2>&1 | tee build.log
+          rm -f "$NOTARY_KEY_PATH"
+
+      - name: Report signing problems
+        if: failure()
+        run: |
+          grep -E "✗|error|Error|status:|Invalid|rejected|The signature|errSec|no identity" build.log 2>/dev/null | head -20 | while IFS= read -r line; do echo "::warning::${line}"; done
 
       - name: Clean up the keychain
-        if: always() && env.HAS_SIGNING == 'true'
+        if: always()
         run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
 
       - name: Version and build number
@@ -112,15 +129,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.build.outputs.version }}
           BUILD: ${{ needs.build.outputs.build }}
-          SIGNED: ${{ needs.build.outputs.signed }}
         run: |
           TAG="v${VERSION}-beta-build${BUILD}"
           (cd dist && sha256sum *.dmg > SHA256SUMS.txt)
-          if [ "$SIGNED" = "true" ]; then
-            OPEN="2. It's signed with Developer ID and notarised by Apple, so it opens normally."
-          else
-            OPEN="2. It isn't signed with a Developer ID. If macOS won't open it, run this in Terminal, then open it again: \`xattr -cr \"/Applications/SampleBlaster Lite.app\"\`"
-          fi
+          OPEN="2. It's signed with Developer ID and notarised by Apple, so it opens normally."
           cat > notes.md <<NOTES
           SampleBlaster Lite ${VERSION} beta (build ${BUILD}), from commit ${GITHUB_SHA::7}. Copyright Ed Davis 2026.
 
