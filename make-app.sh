@@ -6,8 +6,12 @@
 # (no Swift runtime to bundle), and the compiler refuses any API newer than
 # 10.13 that isn't checked first.
 #
-#   ./make-app.sh                       ad-hoc signed (right-click ▸ Open the first time)
+#   ./make-app.sh                       ad-hoc signed (for testing on this Mac)
 #   SIGN_IDENTITY="Developer ID Application: …" ./make-app.sh
+#                                       signed with your Developer ID
+# To notarise as well (so it opens normally on every Mac), add one of:
+#   NOTARY_PROFILE=<name>               a profile saved with `xcrun notarytool store-credentials`
+#   NOTARY_KEY_PATH, NOTARY_KEY_ID, NOTARY_ISSUER   an App Store Connect API key
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -54,11 +58,15 @@ if [[ -f Artwork/Header.png ]]; then cp Artwork/Header.png "$APP/Contents/Resour
 
 xattr -cr "$APP" 2>/dev/null || true
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
+  echo "▸ Signing ad hoc (not for distribution)…"
   codesign --force --sign - "$APP"
 else
-  codesign --force --timestamp --sign "$SIGN_IDENTITY" "$APP"
+  echo "▸ Signing with ${SIGN_IDENTITY}…"
+  # Hardened runtime and a secure timestamp: both needed for notarisation.
+  # High Sierra ignores the runtime flag and checks the Developer ID signature.
+  codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
 fi
-codesign --verify --strict "$APP"
+codesign --verify --strict --verbose=2 "$APP"
 
 echo "▸ Checking it's built for High Sierra…"
 ./Packaging/check-compat.sh "$APP/Contents/MacOS/$EXEC"
@@ -70,4 +78,41 @@ cp -R "$APP" "$STAGING/"
 ln -s /Applications "$STAGING/Applications"
 hdiutil create -volname "$APP_NAME" -srcfolder "$STAGING" -fs HFS+ -format UDZO -ov "$DMG" >/dev/null
 rm -rf "$STAGING"
+
+if [[ "$SIGN_IDENTITY" != "-" ]]; then
+  codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG"
+  NOTARY_ARGS=()
+  if [[ -n "${NOTARY_PROFILE:-}" ]]; then
+    NOTARY_ARGS=(--keychain-profile "$NOTARY_PROFILE")
+  elif [[ -n "${NOTARY_KEY_PATH:-}" ]]; then
+    NOTARY_ARGS=(--key "$NOTARY_KEY_PATH" --key-id "${NOTARY_KEY_ID:?Set NOTARY_KEY_ID}" --issuer "${NOTARY_ISSUER:?Set NOTARY_ISSUER}")
+  fi
+  if [[ ${#NOTARY_ARGS[@]} -gt 0 ]]; then
+    echo "▸ Notarising (usually a few minutes)…"
+    OUT="$(xcrun notarytool submit "$DMG" "${NOTARY_ARGS[@]}" --wait 2>&1)" || true
+    echo "$OUT"
+    if ! grep -q "status: Accepted" <<<"$OUT"; then
+      ID="$(awk '/^  id:/{print $2; exit}' <<<"$OUT")"
+      [[ -n "$ID" ]] && xcrun notarytool log "$ID" "${NOTARY_ARGS[@]}" || true
+      echo "✗ Notarisation failed."; exit 1
+    fi
+    xcrun stapler staple "$APP"
+    # Rebuild the DMG around the stapled app, then sign, notarise and staple it too.
+    STAGING="$(mktemp -d)"
+    cp -R "$APP" "$STAGING/"
+    ln -s /Applications "$STAGING/Applications"
+    hdiutil create -volname "$APP_NAME" -srcfolder "$STAGING" -fs HFS+ -format UDZO -ov "$DMG" >/dev/null
+    rm -rf "$STAGING"
+    codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG"
+    OUT="$(xcrun notarytool submit "$DMG" "${NOTARY_ARGS[@]}" --wait 2>&1)" || true
+    echo "$OUT"
+    grep -q "status: Accepted" <<<"$OUT" || { echo "✗ Notarising the DMG failed."; exit 1; }
+    xcrun stapler staple "$DMG"
+    spctl --assess --type execute -vv "$APP"
+    spctl --assess --type open --context context:primary-signature -vv "$DMG"
+    echo "✓ Signed, notarised and stapled."
+  else
+    echo "  (signed but not notarised: set NOTARY_PROFILE or the NOTARY_KEY_* variables to notarise)"
+  fi
+fi
 echo "▸ Done: $APP and $DMG"
