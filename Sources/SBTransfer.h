@@ -1,10 +1,10 @@
-// SampleBlaster Lite: adding files to a mounted MPC disk image.
+// SampleBlaster Lite: adding files to a mounted disk image.
 //
-// Every file is copied exactly as it is: samples keep their own sample rate
-// and bit depth, and MPC files (.SND, .PGM, .APS, .ALL…) are untouched. Only
-// the name changes, to a DOS 8.3 uppercase name the MPC2000XL can show.
-// Only file contents are written, never Mac metadata, so no ._ files appear
-// on the card.
+// Files and folders are copied exactly as they are, names included: nothing
+// is converted or renamed, because the image may be for any device (an MPC,
+// a sampler, a synth…) and only the user knows what that device needs. Only
+// file contents are written, never Mac metadata, so no ._ files appear on
+// the card. Existing files are never replaced.
 
 #import <Foundation/Foundation.h>
 
@@ -12,23 +12,12 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface SBTransfer : NSObject
 
-/// Up to 8 characters of A–Z, 0–9, "_" and "-"; spaces and dots become "_".
-+ (NSString *)baseName:(NSString *)raw fallback:(NSString *)fallback;
-
-/// "NAME.EXT", made unique (case-insensitively) against `taken`, which it
-/// then joins. The extension is uppercased and cut to 3 characters.
-+ (NSString *)uniqueFileName:(NSString *)rawBase extension:(NSString *)extension taken:(NSMutableSet<NSString *> *)taken;
-
-/// Same rules for a folder (no extension).
-+ (NSString *)uniqueFolderName:(NSString *)raw taken:(NSMutableSet<NSString *> *)taken;
-
-/// Uppercased names already in `folder`.
-+ (NSMutableSet<NSString *> *)takenNamesInFolder:(NSURL *)folder;
-
-/// Adds files and folders to `folder` (folders keep their structure).
-/// Hidden files and symbolic links are skipped. `progress` is called with
-/// each source file's name before it's added. Returns one line per item:
-/// what it became, or why it was skipped.
+/// Copies files and folders into `folder` with their own names. A folder
+/// that already exists there is added to; a file that already exists is
+/// skipped, never replaced. Hidden files (.DS_Store and the like) and
+/// symbolic links are skipped. `progress` is called with each source file's
+/// name before it's copied. Returns one line per item: what was copied, or
+/// why it was skipped.
 + (NSArray<NSString *> *)addItems:(NSArray<NSURL *> *)items
                          toFolder:(NSURL *)folder
                          progress:(nullable void (^)(NSString *name))progress;

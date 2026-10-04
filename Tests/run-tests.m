@@ -1,7 +1,7 @@
 // SampleBlaster Lite tests. Built and run by Tests/run-tests.sh on a Mac:
-// naming, and a real mount → add files → eject cycle on a FAT16 image with
-// an MBR, like ZuluSCSI images made by the MPC. Files must arrive byte for
-// byte: no conversion, so samples keep their own rate and bit depth.
+// a real mount → add files → eject cycle on a FAT16 image with an MBR, like
+// ZuluSCSI images. Files and folders must arrive exactly as they are, names
+// included, and nothing already on the image may be replaced.
 
 #import <Foundation/Foundation.h>
 #import "../Sources/SBDisk.h"
@@ -28,25 +28,6 @@ static NSURL *makeFile(NSURL *dir, NSString *name, NSUInteger length, uint8_t se
     NSURL *url = [dir URLByAppendingPathComponent:name];
     [data writeToURL:url atomically:YES];
     return url;
-}
-
-static void testNames(void) {
-    CHECK([[SBTransfer baseName:@"Kick Drum 01" fallback:@"X"] isEqualToString:@"KICK_DRU"], @"%@", [SBTransfer baseName:@"Kick Drum 01" fallback:@"X"]);
-    CHECK([[SBTransfer baseName:@"café/../x" fallback:@"X"] isEqualToString:@"CAFE_X"], @"%@", [SBTransfer baseName:@"café/../x" fallback:@"X"]);
-    CHECK([[SBTransfer baseName:@"..." fallback:@"SAMPLE"] isEqualToString:@"SAMPLE"], @"dots only");
-    CHECK([[SBTransfer baseName:@"" fallback:@"SAMPLE"] isEqualToString:@"SAMPLE"], @"empty");
-
-    NSMutableSet *taken = [NSMutableSet setWithArray:@[@"KICK.WAV"]];
-    NSString *a = [SBTransfer uniqueFileName:@"kick" extension:@"wav" taken:taken];
-    NSString *b = [SBTransfer uniqueFileName:@"KICK" extension:@"WAV" taken:taken];
-    CHECK([a isEqualToString:@"KICK1.WAV"], @"%@", a);
-    CHECK([b isEqualToString:@"KICK2.WAV"], @"%@", b);
-    NSString *longBase = [SBTransfer uniqueFileName:@"ABCDEFGHIJ" extension:@"pgm" taken:taken];
-    NSString *longBase2 = [SBTransfer uniqueFileName:@"ABCDEFGHIJ" extension:@"pgm" taken:taken];
-    CHECK([longBase isEqualToString:@"ABCDEFGH.PGM"] && [longBase2 isEqualToString:@"ABCDEFG1.PGM"], @"%@ %@", longBase, longBase2);
-    CHECK([[SBTransfer uniqueFileName:@"x" extension:@"aiff" taken:taken] isEqualToString:@"X.AIF"], @"extension cut to 3");
-    NSMutableSet *folders = [NSMutableSet setWithArray:@[@"DRUMS"]];
-    CHECK([[SBTransfer uniqueFolderName:@"Drums" taken:folders] isEqualToString:@"DRUMS1"], @"folder uniquing");
 }
 
 /// A 64 MB raw image with an MBR and one FAT16 partition, as ZuluSCSI uses.
@@ -99,30 +80,46 @@ static void testMountAddEject(void) {
     NSURL *root = mounted.mountPoints.firstObject;
 
     NSArray *results = [SBTransfer addItems:@[tone, wav, [source URLByAppendingPathComponent:@"cym1.pgm"], kit] toFolder:root progress:nil];
-    NSArray *again = [SBTransfer addItems:@[[source URLByAppendingPathComponent:@"cym1.pgm"]] toFolder:root progress:nil];
-    printf("  %s\n", [[results arrayByAddingObjectsFromArray:again] componentsJoinedByString:@"\n  "].UTF8String);
-
-    // Clutter macOS might leave, which eject must remove.
-    [@"x" writeToURL:[root URLByAppendingPathComponent:@"._CYM1.PGM"] atomically:NO encoding:NSUTF8StringEncoding error:NULL];
-    [fm createDirectoryAtURL:[root URLByAppendingPathComponent:@".Trashes"] withIntermediateDirectories:NO attributes:nil error:NULL];
-
-    NSSet *top = [NSSet setWithArray:[fm contentsOfDirectoryAtPath:root.path error:NULL]];
-    for (NSString *expected in @[@"LONG_TON.AIF", @"SNARE_96.WAV", @"CYM1.PGM", @"CYM11.PGM", @"MY_KIT"]) {
-        CHECK([top containsObject:expected], @"%@ missing from %@", expected, top);
-    }
-    NSSet *kitFiles = [NSSet setWithArray:[fm contentsOfDirectoryAtPath:[root URLByAppendingPathComponent:@"MY_KIT"].path error:NULL]];
-    NSSet *wantKit = [NSSet setWithArray:@[@"KICK.AIF", @"SNARES_A"]];
-    CHECK([kitFiles isEqualToSet:wantKit], @"MY_KIT holds %@", kitFiles);
-    NSData *copied = [NSData dataWithContentsOfURL:[root URLByAppendingPathComponent:@"MY_KIT/SNARES_A/SNARE.SND"]];
-    CHECK([copied isEqualToData:pgm], @"SNARE.SND copied byte for byte");
-    CHECK([[NSData dataWithContentsOfURL:[root URLByAppendingPathComponent:@"CYM1.PGM"]] isEqualToData:pgm], @"CYM1.PGM byte for byte");
-    // No conversion: samples arrive exactly as they were.
-    CHECK([[NSData dataWithContentsOfURL:[root URLByAppendingPathComponent:@"LONG_TON.AIF"]] isEqualToData:[NSData dataWithContentsOfURL:tone]], @"AIFF unchanged");
-    CHECK([[NSData dataWithContentsOfURL:[root URLByAppendingPathComponent:@"SNARE_96.WAV"]] isEqualToData:[NSData dataWithContentsOfURL:wav]], @"WAV unchanged");
-    CHECK([[NSData dataWithContentsOfURL:[root URLByAppendingPathComponent:@"MY_KIT/KICK.AIF"]] isEqualToData:[NSData dataWithContentsOfURL:kick]], @"nested sample unchanged");
+    printf("  %s\n", [results componentsJoinedByString:@"\n  "].UTF8String);
     NSUInteger skipped = 0;
     for (NSString *line in results) if ([line containsString:@"skipped"]) skipped++;
     CHECK(skipped == 1, @"only the link is skipped: %@", results);
+
+    // Names are kept exactly, case and spaces included.
+    NSSet *top = [NSSet setWithArray:[fm contentsOfDirectoryAtPath:root.path error:NULL]];
+    for (NSString *expected in @[@"Long Tone Name.aiff", @"Snare 96k.wav", @"cym1.pgm", @"My Kit"]) {
+        CHECK([top containsObject:expected], @"%@ missing from %@", expected, top);
+    }
+    NSSet *kitFiles = [NSSet setWithArray:[fm contentsOfDirectoryAtPath:[root URLByAppendingPathComponent:@"My Kit"].path error:NULL]];
+    NSSet *wantKit = [NSSet setWithArray:@[@"kick.aif", @"Snares and stuff"]];
+    CHECK([kitFiles isEqualToSet:wantKit], @"My Kit holds %@", kitFiles);
+    // Contents arrive byte for byte: no conversion.
+    CHECK([[NSData dataWithContentsOfURL:[root URLByAppendingPathComponent:@"My Kit/Snares and stuff/snare.snd"]] isEqualToData:pgm], @"snare.snd unchanged");
+    CHECK([[NSData dataWithContentsOfURL:[root URLByAppendingPathComponent:@"cym1.pgm"]] isEqualToData:pgm], @"cym1.pgm unchanged");
+    CHECK([[NSData dataWithContentsOfURL:[root URLByAppendingPathComponent:@"Long Tone Name.aiff"]] isEqualToData:[NSData dataWithContentsOfURL:tone]], @"AIFF unchanged");
+    CHECK([[NSData dataWithContentsOfURL:[root URLByAppendingPathComponent:@"Snare 96k.wav"]] isEqualToData:[NSData dataWithContentsOfURL:wav]], @"WAV unchanged");
+    CHECK([[NSData dataWithContentsOfURL:[root URLByAppendingPathComponent:@"My Kit/kick.aif"]] isEqualToData:[NSData dataWithContentsOfURL:kick]], @"nested file unchanged");
+
+    // Adding again: existing files are never replaced (even with different
+    // contents), existing folders are added to, new files go in.
+    NSURL *other = [dir URLByAppendingPathComponent:@"other" isDirectory:YES];
+    NSURL *otherKit = [other URLByAppendingPathComponent:@"My Kit" isDirectory:YES];
+    [fm createDirectoryAtURL:otherKit withIntermediateDirectories:YES attributes:nil error:NULL];
+    makeFile(other, @"cym1.pgm", 10, 9);
+    makeFile(otherKit, @"kick.aif", 10, 9);
+    NSURL *hat = makeFile(otherKit, @"hat.wav", 700, 4);
+    NSArray *again = [SBTransfer addItems:@[[other URLByAppendingPathComponent:@"cym1.pgm"], otherKit] toFolder:root progress:nil];
+    printf("  %s\n", [again componentsJoinedByString:@"\n  "].UTF8String);
+    NSUInteger skippedAgain = 0;
+    for (NSString *line in again) if ([line containsString:@"skipped"]) skippedAgain++;
+    CHECK(skippedAgain == 2, @"both clashing files skipped: %@", again);
+    CHECK([[NSData dataWithContentsOfURL:[root URLByAppendingPathComponent:@"cym1.pgm"]] isEqualToData:pgm], @"existing file not replaced");
+    CHECK([[NSData dataWithContentsOfURL:[root URLByAppendingPathComponent:@"My Kit/kick.aif"]] isEqualToData:[NSData dataWithContentsOfURL:kick]], @"existing nested file not replaced");
+    CHECK([[NSData dataWithContentsOfURL:[root URLByAppendingPathComponent:@"My Kit/hat.wav"]] isEqualToData:[NSData dataWithContentsOfURL:hat]], @"new file added to existing folder");
+
+    // Clutter macOS might leave, which eject must remove.
+    [@"x" writeToURL:[root URLByAppendingPathComponent:@"._cym1.pgm"] atomically:NO encoding:NSUTF8StringEncoding error:NULL];
+    [fm createDirectoryAtURL:[root URLByAppendingPathComponent:@".Trashes"] withIntermediateDirectories:NO attributes:nil error:NULL];
 
     BOOL ejected = [SBDisk ejectImage:mounted error:&error];
     CHECK(ejected, @"eject failed: %@", error);
@@ -139,7 +136,7 @@ static void testMountAddEject(void) {
         NSMutableArray *dotFiles = [NSMutableArray array];
         for (NSURL *url in e) if ([url.lastPathComponent hasPrefix:@"."]) [dotFiles addObject:url.lastPathComponent];
         CHECK(dotFiles.count == 0, @"no Mac clutter on the card, found %@", dotFiles);
-        CHECK([fm fileExistsAtPath:[mounts[0] URLByAppendingPathComponent:@"MY_KIT/KICK.AIF"].path], @"files survive eject");
+        CHECK([fm fileExistsAtPath:[mounts[0] URLByAppendingPathComponent:@"My Kit/hat.wav"].path], @"files survive eject");
     }
     if (device) [SBDisk runTool:@"/usr/bin/hdiutil" arguments:@[@"detach", @"-force", device] output:NULL errorOutput:NULL];
 
@@ -165,7 +162,6 @@ static void testParsePlist(void) {
 
 int main(void) {
     @autoreleasepool {
-        testNames();
         testParsePlist();
         testMountAddEject();
         printf("%d checks, %d failed\n", checks, failures);

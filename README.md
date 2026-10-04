@@ -5,13 +5,15 @@ A simple Mac utility for ZuluSCSI disk images, by Ed Davis. It runs on **macOS 1
 It does two things:
 
 1. **Mounts** a ZuluSCSI / BlueSCSI hard disk image (`HD0.img`, `.hda`), straight from the SD card.
-2. **Adds files** to it: drag files and folders onto the window, or click **Add Files…**.
-   - Every file is copied exactly as it is: no conversion, so samples keep their own sample rate and bit depth, and MPC files (.SND, .PGM, .APS, .ALL…) are untouched.
-   - Names become MPC-friendly 8.3 uppercase names (`Kick Drum 01.wav` → `KICK_DRU.WAV`), and folders keep their structure.
+2. **Copies files** onto it: drag files and folders onto the window, or click **Add Files…**.
+   - Everything is copied exactly as it is, names included: nothing is converted or renamed. The image could be for an MPC, a sampler or a synth, so it's up to you to give each device the file formats and names it needs.
+   - Folders keep their structure. Copying a folder that's already on the image adds to it.
+   - A file that's already on the image is never replaced: it's skipped, and you're told.
+   - Hidden Mac files (`.DS_Store` and the like) and aliases are left out.
 
-Then click **Eject**. Mac clutter (`._` files, `.DS_Store`, `.Trashes`…) is removed first, so the MPC only sees your files, and the SD card can be ejected too.
+Then click **Eject**. Mac clutter (`._` files, `.DS_Store`, `.Trashes`…) is removed first, so the device only sees your files, and the SD card can be ejected too.
 
-You can open folders on the image (double-click) to add files inside them, and pick a partition on images with more than one.
+You can open folders on the image (double-click) to copy files into them, and pick a partition on images with more than one.
 
 ## Building
 

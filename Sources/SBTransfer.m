@@ -14,63 +14,10 @@ static NSError *SBTransferError(NSString *message) {
 
 @implementation SBTransfer
 
-#pragma mark Names
-
-+ (NSString *)baseName:(NSString *)raw fallback:(NSString *)fallback {
-    NSString *folded = [[raw stringByFoldingWithOptions:NSDiacriticInsensitiveSearch locale:nil] uppercaseString];
-    NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:@"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"];
-    NSMutableString *out = [NSMutableString string];
-    for (NSUInteger i = 0; i < folded.length; i++) {
-        unichar c = [folded characterAtIndex:i];
-        if ([allowed characterIsMember:c]) {
-            [out appendFormat:@"%C", c];
-        } else if ((c == ' ' || c == '.') && ![out hasSuffix:@"_"]) {
-            [out appendString:@"_"];
-        }
-    }
-    NSString *trimmed = [out stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"_"]];
-    if (trimmed.length == 0) trimmed = fallback;
-    return trimmed.length > 8 ? [trimmed substringToIndex:8] : trimmed;
-}
-
-+ (NSString *)uniqueFileName:(NSString *)rawBase extension:(NSString *)extension taken:(NSMutableSet<NSString *> *)taken {
-    NSString *base = [self baseName:rawBase fallback:@"SAMPLE"];
-    NSString *ext = [self baseName:extension fallback:@"BIN"];
-    if (ext.length > 3) ext = [ext substringToIndex:3];
-    NSString *candidate = [NSString stringWithFormat:@"%@.%@", base, ext];
-    for (NSUInteger n = 1; [taken containsObject:candidate.uppercaseString]; n++) {
-        NSString *suffix = [NSString stringWithFormat:@"%lu", (unsigned long)n];
-        NSString *shortBase = base.length + suffix.length > 8 ? [base substringToIndex:8 - suffix.length] : base;
-        candidate = [NSString stringWithFormat:@"%@%@.%@", shortBase, suffix, ext];
-    }
-    [taken addObject:candidate.uppercaseString];
-    return candidate;
-}
-
-+ (NSString *)uniqueFolderName:(NSString *)raw taken:(NSMutableSet<NSString *> *)taken {
-    NSString *base = [self baseName:raw fallback:@"FOLDER"];
-    NSString *candidate = base;
-    for (NSUInteger n = 1; [taken containsObject:candidate.uppercaseString]; n++) {
-        NSString *suffix = [NSString stringWithFormat:@"%lu", (unsigned long)n];
-        NSString *shortBase = base.length + suffix.length > 8 ? [base substringToIndex:8 - suffix.length] : base;
-        candidate = [shortBase stringByAppendingString:suffix];
-    }
-    [taken addObject:candidate.uppercaseString];
-    return candidate;
-}
-
-+ (NSMutableSet<NSString *> *)takenNamesInFolder:(NSURL *)folder {
-    NSMutableSet<NSString *> *taken = [NSMutableSet set];
-    for (NSString *name in [NSFileManager.defaultManager contentsOfDirectoryAtPath:folder.path error:NULL]) {
-        [taken addObject:name.uppercaseString];
-    }
-    return taken;
-}
-
 #pragma mark Copying
 
 /// Copies only the file's contents (no Mac metadata, so no ._ files on FAT)
-/// to a new file. Never overwrites, never follows a link at the destination.
+/// to a new file. Never replaces an existing file, never follows a link.
 + (BOOL)copyContentsOf:(NSURL *)source to:(NSURL *)destination error:(NSError **)error {
     int src = open(source.fileSystemRepresentation, O_RDONLY | O_NOFOLLOW);
     if (src < 0) {
@@ -109,17 +56,17 @@ static NSError *SBTransferError(NSString *message) {
     return ok;
 }
 
-+ (void)addFile:(NSURL *)url into:(NSURL *)folder taken:(NSMutableSet<NSString *> *)taken
-         prefix:(NSString *)prefix results:(NSMutableArray<NSString *> *)results {
++ (void)addFile:(NSURL *)url into:(NSURL *)folder prefix:(NSString *)prefix results:(NSMutableArray<NSString *> *)results {
     NSString *display = [prefix stringByAppendingString:url.lastPathComponent];
-    NSString *base = url.lastPathComponent.stringByDeletingPathExtension;
-    NSString *ext = url.pathExtension.length ? url.pathExtension : @"BIN";
-    NSString *name = [self uniqueFileName:base extension:ext taken:taken];
+    NSURL *destination = [folder URLByAppendingPathComponent:url.lastPathComponent];
+    if ([NSFileManager.defaultManager fileExistsAtPath:destination.path]) {
+        [results addObject:[NSString stringWithFormat:@"%@: skipped. A file with that name is already there.", display]];
+        return;
+    }
     NSError *error = nil;
-    if ([self copyContentsOf:url to:[folder URLByAppendingPathComponent:name] error:&error]) {
-        [results addObject:[NSString stringWithFormat:@"%@ → %@", display, name]];
+    if ([self copyContentsOf:url to:destination error:&error]) {
+        [results addObject:[NSString stringWithFormat:@"%@: copied", display]];
     } else {
-        [taken removeObject:name.uppercaseString];
         [results addObject:[NSString stringWithFormat:@"%@: skipped. %@", display, error.localizedDescription]];
     }
 }
@@ -138,13 +85,12 @@ static NSError *SBTransferError(NSString *message) {
     children = [children sortedArrayUsingComparator:^NSComparisonResult(NSURL *a, NSURL *b) {
         return [a.lastPathComponent localizedStandardCompare:b.lastPathComponent];
     }];
-    NSMutableSet<NSString *> *taken = [self takenNamesInFolder:destination];
     for (NSURL *child in children) {
-        [self addItem:child into:destination taken:taken depth:depth prefix:prefix results:results progress:progress];
+        [self addItem:child into:destination depth:depth prefix:prefix results:results progress:progress];
     }
 }
 
-+ (void)addItem:(NSURL *)url into:(NSURL *)folder taken:(NSMutableSet<NSString *> *)taken depth:(NSInteger)depth
++ (void)addItem:(NSURL *)url into:(NSURL *)folder depth:(NSInteger)depth
          prefix:(NSString *)prefix results:(NSMutableArray<NSString *> *)results progress:(void (^)(NSString *))progress {
     NSString *name = url.lastPathComponent;
     NSString *display = [prefix stringByAppendingString:name];
@@ -158,15 +104,22 @@ static NSError *SBTransferError(NSString *message) {
         return;
     }
     if (isDir.boolValue) {
-        NSString *folderName = [self uniqueFolderName:name taken:taken];
-        NSURL *made = [folder URLByAppendingPathComponent:folderName isDirectory:YES];
-        NSError *error = nil;
-        if (![NSFileManager.defaultManager createDirectoryAtURL:made withIntermediateDirectories:NO attributes:nil error:&error]) {
-            [taken removeObject:folderName.uppercaseString];
-            [results addObject:[NSString stringWithFormat:@"%@: skipped. %@", display, error.localizedDescription]];
-            return;
+        NSURL *made = [folder URLByAppendingPathComponent:name isDirectory:YES];
+        BOOL existingIsDir = NO;
+        if ([NSFileManager.defaultManager fileExistsAtPath:made.path isDirectory:&existingIsDir]) {
+            if (!existingIsDir) {
+                [results addObject:[NSString stringWithFormat:@"%@/: skipped. A file with that name is already there.", display]];
+                return;
+            }
+            [results addObject:[NSString stringWithFormat:@"%@/: adding to the folder already there", display]];
+        } else {
+            NSError *error = nil;
+            if (![NSFileManager.defaultManager createDirectoryAtURL:made withIntermediateDirectories:NO attributes:nil error:&error]) {
+                [results addObject:[NSString stringWithFormat:@"%@/: skipped. %@", display, error.localizedDescription]];
+                return;
+            }
+            [results addObject:[NSString stringWithFormat:@"%@/: copied", display]];
         }
-        [results addObject:[NSString stringWithFormat:@"%@/ → %@/", display, folderName]];
         [self addFolderContents:url into:made depth:depth + 1
                          prefix:[display stringByAppendingString:@"/"] results:results progress:progress];
         return;
@@ -176,15 +129,14 @@ static NSError *SBTransferError(NSString *message) {
         return;
     }
     if (progress) progress(display);
-    [self addFile:url into:folder taken:taken prefix:prefix results:results];
+    [self addFile:url into:folder prefix:prefix results:results];
 }
 
 + (NSArray<NSString *> *)addItems:(NSArray<NSURL *> *)items toFolder:(NSURL *)folder progress:(void (^)(NSString *))progress {
     NSMutableArray<NSString *> *results = [NSMutableArray array];
-    NSMutableSet<NSString *> *taken = [self takenNamesInFolder:folder];
     for (NSURL *url in items) {
         @autoreleasepool {
-            [self addItem:url into:folder taken:taken depth:0 prefix:@"" results:results progress:progress];
+            [self addItem:url into:folder depth:0 prefix:@"" results:results progress:progress];
         }
     }
     sync();
