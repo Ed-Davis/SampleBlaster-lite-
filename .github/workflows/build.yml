@@ -1,0 +1,46 @@
+name: Build and Test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0   # the build number counts commits
+
+      - name: Show toolchain
+        run: xcodebuild -version && xcrun clang --version | head -1
+
+      - name: Run the tests (real mount, add files, eject)
+        run: |
+          set -o pipefail
+          ./Tests/run-tests.sh 2>&1 | tee test.log
+
+      - name: Build the app and DMG, and check it targets High Sierra
+        run: |
+          set -o pipefail
+          ./make-app.sh 2>&1 | tee build.log
+
+      - name: Report problems
+        if: always()
+        run: |
+          cat test.log build.log 2>/dev/null | grep -E "✗|error:|checks,|warning:" | head -40 | while IFS= read -r line; do
+            echo "::warning::${line}"
+          done
+
+      - name: Upload the DMG
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: SampleBlaster-Lite
+          path: build/*.dmg
+          if-no-files-found: error
+          retention-days: 30

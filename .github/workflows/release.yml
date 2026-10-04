@@ -1,0 +1,81 @@
+name: Beta Release
+
+# Push to a branch named test-release/<anything> (or run it from the Actions
+# tab) to publish the DMG as a GitHub pre-release, tagged
+# v<version>-beta-build<number>. Always a pre-release: this app can't be
+# tested on a High Sierra Mac before it goes out.
+on:
+  push:
+    branches: [ 'test-release/**' ]
+  workflow_dispatch:
+
+# Building runs read-only; only the publish job can write, and it runs
+# nothing from the repository.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      build: ${{ steps.meta.outputs.build }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0   # the build number counts commits
+
+      - name: Run the tests
+        run: ./Tests/run-tests.sh
+
+      - name: Build the app and DMG
+        run: ./make-app.sh
+
+      - name: Version and build number
+        id: meta
+        run: |
+          echo "version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Packaging/Info.plist)" >> "$GITHUB_OUTPUT"
+          echo "build=$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the DMG
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: SampleBlaster-Lite-release
+          path: build/*.dmg
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download the DMG
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: SampleBlaster-Lite-release
+          path: dist
+
+      - name: Publish the pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+          BUILD: ${{ needs.build.outputs.build }}
+        run: |
+          TAG="v${VERSION}-beta-build${BUILD}"
+          (cd dist && sha256sum *.dmg > SHA256SUMS.txt)
+          cat > notes.md <<NOTES
+          SampleBlaster Lite ${VERSION} beta (build ${BUILD}), from commit ${GITHUB_SHA::7}. Copyright Ed Davis 2026.
+
+          For macOS 10.13 High Sierra and later (Intel and Apple silicon). Mounts a ZuluSCSI disk image and adds files to it, copied exactly as they are.
+
+          **Beta: not yet tested on a High Sierra Mac.** Try it on a copy of your disk image first.
+
+          1. Open the DMG and drag SampleBlaster Lite to Applications.
+          2. It isn't notarised: the first time, right-click it and choose Open.
+          NOTES
+          gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG" dist/*.dmg dist/SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --prerelease --title "SampleBlaster Lite ${VERSION} beta (build ${BUILD})" --notes-file notes.md
