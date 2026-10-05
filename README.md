@@ -2,10 +2,11 @@
 
 A simple Mac utility for ZuluSCSI disk images, by Ed Davis. It runs on **macOS 10.13 High Sierra** and later, on Intel and Apple silicon Macs.
 
-It does two things:
+It does three things:
 
-1. **Mounts** a ZuluSCSI / BlueSCSI hard disk image (`HD0.img`, `.hda`), straight from the SD card.
-2. **Copies files** onto it: drag files and folders onto the window, or click **Add Files…**.
+1. **Creates** blank SCSI disk images for SCSI Blaster, ZuluSCSI, BlueSCSI and SCSI2SD adapters: click **New…** (or File ▸ New Disk Image…, ⌘N), pick a size (100 MB, 250 MB, 500 MB, 750 MB or 1 GB) and save it on the SD card as `HD0.img`. The image gets a PC partition table and one FAT16 partition, the same layout as MPC Blaster's new images, and opens straight away so you can add files.
+2. **Mounts** a ZuluSCSI / BlueSCSI hard disk image (`HD0.img`, `.hda`), straight from the SD card.
+3. **Copies files** onto it: drag files and folders onto the window, or click **Add Files…**.
    - Everything is copied exactly as it is, names included: nothing is converted or renamed. The image could be for an MPC, a sampler or a synth, so it's up to you to give each device the file formats and names it needs.
    - Folders keep their structure. Copying a folder that's already on the image adds to it.
    - A file that's already on the image is never replaced: it's skipped, and you're told.

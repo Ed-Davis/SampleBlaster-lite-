@@ -6,6 +6,7 @@
 #import <Foundation/Foundation.h>
 #import "../Sources/SBDisk.h"
 #import "../Sources/SBTransfer.h"
+#import "../Sources/SBImageMaker.h"
 
 static int failures = 0;
 static int checks = 0;
@@ -160,10 +161,68 @@ static void testParsePlist(void) {
     CHECK([SBDisk parseAttachPlist:[NSData data] mountPoints:&mounts] == nil && mounts.count == 0, @"empty output");
 }
 
+/// New images, smallest and largest: they must mount as one FAT16 volume of
+/// about the right size, pass fsck_msdos, and take files.
+static void testNewImages(void) {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSURL *dir = tempDir();
+    SBImageLayout layout;
+    CHECK(SBImageLayoutForMB(99, &layout) != 0 && SBImageLayoutForMB(1025, &layout) != 0, @"sizes outside 100 MB–1 GB refused");
+    char label[12];
+    SBImageVolumeLabel("hd0 samples!", label);
+    CHECK(strcmp(label, "HD0_SAMPLES") == 0, @"label %s", label);
+
+    for (int i = 0; i < SBImageSizeCount; i++) {
+        int64_t mb = SBImageSizesMB[i];
+        CHECK(SBImageLayoutForMB(mb, &layout) == 0 && layout.clusterCount >= 4085 && layout.clusterCount <= 65524,
+              @"%lld MB: %d clusters", (long long)mb, layout.clusterCount);
+    }
+    for (NSNumber *size in @[@100, @1024]) {
+        int64_t mb = size.longLongValue;
+        NSURL *url = [dir URLByAppendingPathComponent:[NSString stringWithFormat:@"HD%lld.img", (long long)mb]];
+        CHECK(SBImageCreate(url.fileSystemRepresentation, mb, "TEST") == 0, @"%lld MB created", (long long)mb);
+        CHECK(SBImageCreate(url.fileSystemRepresentation, mb, "TEST") == EEXIST, @"won't overwrite an existing file");
+        NSNumber *bytes = nil;
+        [url getResourceValue:&bytes forKey:NSURLFileSizeKey error:NULL];
+        CHECK(bytes.longLongValue == mb * 1048576, @"%lld MB image is %@ bytes", (long long)mb, bytes);
+
+        NSError *error = nil;
+        SBMountedImage *image = [SBDisk attachImageAtURL:url error:&error];
+        CHECK(image && image.mountPoints.count == 1, @"%lld MB mounts one volume: %@", (long long)mb, error);
+        if (!image) continue;
+        NSNumber *free = nil;
+        [image.mountPoints.firstObject getResourceValue:&free forKey:NSURLVolumeAvailableCapacityKey error:NULL];
+        CHECK(free.longLongValue > mb * 1048576 * 9 / 10, @"%lld MB image has %@ bytes free", (long long)mb, free);
+        NSURL *src = tempDir();
+        NSArray *results = [SBTransfer addItems:@[makeFile(src, @"KICK.SND", 50000, 3)] toFolder:image.mountPoints.firstObject progress:nil];
+        CHECK([fm fileExistsAtPath:[image.mountPoints.firstObject URLByAppendingPathComponent:@"KICK.SND"].path], @"file added: %@", results);
+        CHECK([SBDisk ejectImage:image error:&error], @"eject: %@", error);
+        [fm removeItemAtURL:src error:NULL];
+
+        // Check the file system with the image attached but not mounted.
+        NSData *out = nil;
+        NSString *errText = nil;
+        [SBDisk runTool:@"/usr/bin/hdiutil" arguments:@[@"attach", @"-plist", @"-nomount", @"-imagekey",
+                                                         @"diskimage-class=CRawDiskImage", url.path]
+                 output:&out errorOutput:&errText];
+        NSString *device = [SBDisk parseAttachPlist:out mountPoints:NULL];
+        CHECK(device != nil, @"attach for fsck: %@", errText);
+        if (device) {
+            int status = [SBDisk runTool:@"/sbin/fsck_msdos" arguments:@[@"-n", [device stringByAppendingString:@"s1"]]
+                                  output:&out errorOutput:&errText];
+            CHECK(status == 0, @"fsck_msdos %lld MB: %@ %@", (long long)mb,
+                  [[NSString alloc] initWithData:out encoding:NSUTF8StringEncoding], errText);
+            [SBDisk runTool:@"/usr/bin/hdiutil" arguments:@[@"detach", device] output:NULL errorOutput:NULL];
+        }
+    }
+    [fm removeItemAtURL:dir error:NULL];
+}
+
 int main(void) {
     @autoreleasepool {
         testParsePlist();
         testMountAddEject();
+        testNewImages();
         printf("%d checks, %d failed\n", checks, failures);
     }
     return failures ? 1 : 0;

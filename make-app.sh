@@ -22,7 +22,7 @@ VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Packag
 # The build number counts commits, so every build from a new commit is distinct.
 BUILD="${BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
-SOURCES=(Sources/main.m Sources/AppDelegate.m Sources/SBDisk.m Sources/SBTransfer.m)
+SOURCES=(Sources/main.m Sources/AppDelegate.m Sources/SBDisk.m Sources/SBTransfer.m Sources/SBImageMaker.m)
 FLAGS=(-fobjc-arc -O2 -Wall -Wextra -Wno-unused-parameter
        -Werror=unguarded-availability -Werror=unguarded-availability-new -Werror=objc-method-access
        -framework Cocoa)

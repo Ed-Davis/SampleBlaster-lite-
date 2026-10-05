@@ -1,6 +1,7 @@
 #import "AppDelegate.h"
 #import "SBDisk.h"
 #import "SBTransfer.h"
+#import "SBImageMaker.h"
 #import <objc/runtime.h>
 
 #pragma mark - Drop target
@@ -159,6 +160,7 @@ static NSWindow *sSplashWindow;
     NSTextField *_statusLabel;
     NSTextField *_hintLabel;
     NSButton *_openButton;
+    NSButton *_newButton;
     NSButton *_ejectButton;
     NSButton *_upButton;
     NSButton *_addButton;
@@ -254,6 +256,7 @@ static NSWindow *sSplashWindow;
 
     NSMenuItem *fileItem = [[NSMenuItem alloc] init];
     NSMenu *fileMenu = [[NSMenu alloc] initWithTitle:@"File"];
+    [fileMenu addItemWithTitle:@"New Disk Image…" action:@selector(newImage:) keyEquivalent:@"n"].target = self;
     [fileMenu addItemWithTitle:@"Open Disk Image…" action:@selector(openImage:) keyEquivalent:@"o"].target = self;
     [fileMenu addItemWithTitle:@"Add Files…" action:@selector(addFiles:) keyEquivalent:@"a"].target = self;
     fileMenu.itemArray.lastObject.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
@@ -329,9 +332,11 @@ static NSWindow *sSplashWindow;
     }
 
     _openButton = [self button:@"Open Disk Image…" action:@selector(openImage:)];
+    _newButton = [self button:@"New…" action:@selector(newImage:)];
+    _newButton.toolTip = @"Create a blank SCSI disk image (100 MB to 1 GB)";
     _ejectButton = [self button:@"Eject" action:@selector(eject:)];
     _imageLabel = [self label:@"" font:[NSFont systemFontOfSize:NSFont.systemFontSize]];
-    NSStackView *imageRow = [NSStackView stackViewWithViews:@[_openButton, _imageLabel, _ejectButton]];
+    NSStackView *imageRow = [NSStackView stackViewWithViews:@[_openButton, _newButton, _imageLabel, _ejectButton]];
     [_imageLabel setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
 
     _partitionPopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
@@ -374,7 +379,7 @@ static NSWindow *sSplashWindow;
     _spinner.style = NSProgressIndicatorStyleSpinning;
     _spinner.controlSize = NSControlSizeSmall;
     _spinner.displayedWhenStopped = NO;
-    _statusLabel = [self label:@"Choose a ZuluSCSI disk image (.img or .hda) to begin." font:[NSFont systemFontOfSize:NSFont.smallSystemFontSize]];
+    _statusLabel = [self label:@"Open a ZuluSCSI disk image (.img or .hda), or make a new one, to begin." font:[NSFont systemFontOfSize:NSFont.smallSystemFontSize]];
     NSStackView *statusRow = [NSStackView stackViewWithViews:@[_spinner, _statusLabel]];
 
     NSStackView *stack = [NSStackView stackViewWithViews:@[header, imageRow, pathRow, scroll, addRow, _ejectCardCheckbox, statusRow]];
@@ -421,6 +426,7 @@ static NSWindow *sSplashWindow;
 - (void)updateUI {
     BOOL mounted = _mounted != nil;
     _openButton.enabled = !_busy && !mounted;
+    _newButton.enabled = !_busy && !mounted;
     _ejectButton.enabled = !_busy && mounted;
     _addButton.enabled = !_busy && mounted;
     _table.enabled = !_busy && mounted;
@@ -512,6 +518,63 @@ static NSWindow *sSplashWindow;
             [self setBusy:NO status:[NSString stringWithFormat:@"Opened %@%@. Add files, then Eject.", url.lastPathComponent,
                                      image.mountPoints.count > 1 ? [NSString stringWithFormat:@" (%lu partitions)", (unsigned long)image.mountPoints.count] : @""]];
             [self reloadFolder];
+        });
+    });
+}
+
+#pragma mark New disk images
+
+/// Asks for a size and a place, writes a blank image (MBR + one FAT16
+/// partition, as SCSI Blaster, ZuluSCSI and BlueSCSI use), then opens it.
+- (IBAction)newImage:(id)sender {
+    if (_busy || _mounted) return;
+    NSPopUpButton *sizes = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    for (int i = 0; i < SBImageSizeCount; i++) {
+        int64_t mb = SBImageSizesMB[i];
+        [sizes addItemWithTitle:mb >= 1024 ? [NSString stringWithFormat:@"%lld GB", (long long)(mb / 1024)]
+                                           : [NSString stringWithFormat:@"%lld MB", (long long)mb]];
+        sizes.lastItem.tag = (NSInteger)mb;
+    }
+    [sizes selectItemWithTag:[NSUserDefaults.standardUserDefaults integerForKey:@"NewImageMB"] ?: 500];
+    if (!sizes.selectedItem) [sizes selectItemAtIndex:0];
+    NSTextField *sizeLabel = [NSTextField labelWithString:@"Size:"];
+    NSStackView *accessory = [NSStackView stackViewWithViews:@[sizeLabel, sizes]];
+    accessory.edgeInsets = NSEdgeInsetsMake(8, 8, 8, 8);
+    [accessory setFrameSize:accessory.fittingSize];
+
+    NSSavePanel *panel = [NSSavePanel savePanel];
+    panel.message = @"Create a blank SCSI disk image. Save it on the SD card as HD0.img (or HD1.img…) for your SCSI adapter.";
+    panel.nameFieldStringValue = @"HD0.img";
+    panel.allowedFileTypes = @[@"img", @"hda"];
+    panel.allowsOtherFileTypes = NO;
+    panel.accessoryView = accessory;
+    [panel beginSheetModalForWindow:_window completionHandler:^(NSModalResponse result) {
+        if (result != NSModalResponseOK || !panel.URL) return;
+        int64_t mb = (int64_t)sizes.selectedItem.tag;
+        [NSUserDefaults.standardUserDefaults setInteger:(NSInteger)mb forKey:@"NewImageMB"];
+        [self createImageAtURL:panel.URL sizeMB:mb];
+    }];
+}
+
+- (void)createImageAtURL:(NSURL *)url sizeMB:(int64_t)mb {
+    NSString *sizeText = [self sizeText:(unsigned long long)mb * 1048576ULL];
+    [self setBusy:YES status:[NSString stringWithFormat:@"Creating %@ (%@)…", url.lastPathComponent, sizeText]];
+    dispatch_async(_work, ^{
+        // The save panel has already asked before replacing an existing file.
+        [NSFileManager.defaultManager removeItemAtURL:url error:NULL];
+        NSString *label = url.lastPathComponent.stringByDeletingPathExtension;
+        int err = SBImageCreate(url.fileSystemRepresentation, mb, label.UTF8String);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (err != 0) {
+                NSString *why = err == EFBIG ? @"The card or disk can't hold a file that big."
+                              : err == ENOSPC ? @"There isn't enough free space."
+                              : [NSString stringWithUTF8String:strerror(err)];
+                [self setBusy:NO status:[NSString stringWithFormat:@"Couldn't create %@.", url.lastPathComponent]];
+                [self showAlert:@"Couldn't create the disk image" text:why];
+                return;
+            }
+            [self setBusy:NO status:[NSString stringWithFormat:@"Created %@ (%@).", url.lastPathComponent, sizeText]];
+            [self mountImage:url];
         });
     });
 }

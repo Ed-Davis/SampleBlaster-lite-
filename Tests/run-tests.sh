@@ -6,6 +6,6 @@ mkdir -p build
 xcrun clang -fobjc-arc -Wall -Wextra -Wno-unused-parameter \
   -Werror=unguarded-availability -Werror=unguarded-availability-new \
   -target "$(uname -m)-apple-macos11.0" \
-  Tests/run-tests.m Sources/SBDisk.m Sources/SBTransfer.m \
+  Tests/run-tests.m Sources/SBDisk.m Sources/SBTransfer.m Sources/SBImageMaker.m \
   -framework Foundation -o build/run-tests
 ./build/run-tests
